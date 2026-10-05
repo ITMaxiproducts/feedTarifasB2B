@@ -148,6 +148,19 @@ final class StateStore
         return $job === false ? null : $job;
     }
 
+    public function waitingShopifyJob(): ?array
+    {
+        $job = $this->pdo->query("SELECT * FROM jobs WHERE action IN ('initial_load', 'sync') AND status = 'waiting_shopify' ORDER BY id LIMIT 1")->fetch();
+        return $job === false ? null : $job;
+    }
+
+    public function unmappedArticles(int $jobId): array
+    {
+        $statement = $this->pdo->prepare('SELECT DISTINCT p.article_id FROM job_prices p LEFT JOIN variant_map v ON v.article_id = p.article_id WHERE p.job_id = ? AND v.article_id IS NULL ORDER BY p.article_id');
+        $statement->execute([$jobId]);
+        return $statement->fetchAll(PDO::FETCH_COLUMN);
+    }
+
     public function activeInitialLoad(): bool
     {
         return (bool) $this->pdo->query("SELECT 1 FROM jobs WHERE action = 'initial_load' AND status IN ('pending','running','waiting_shopify') LIMIT 1")->fetchColumn();
@@ -281,6 +294,9 @@ final class StateStore
 
     public function claimNext(): ?array
     {
+        if ($this->waitingShopifyJob() !== null) {
+            return null;
+        }
         $this->pdo->beginTransaction();
         try {
             $job = $this->pdo->query("SELECT * FROM jobs WHERE status = 'pending' ORDER BY CASE WHEN action = 'initial_load' THEN 0 ELSE 1 END, id LIMIT 1")->fetch();
@@ -346,9 +362,7 @@ final class StateStore
         if ($job === false) {
             return null;
         }
-        $job['summary'] = $job['summary'] === null ? [] : json_decode($job['summary'], true, flags: JSON_THROW_ON_ERROR);
-        $job['summary']['error_count'] = $this->errorCount($jobId);
-        return $job;
+        return $this->hydrateJob($job);
     }
 
     public function latestInitialLoad(): ?array
@@ -359,10 +373,47 @@ final class StateStore
 
     private function hydrateJob(array $job): array
     {
-        $statement = $this->pdo->prepare('SELECT row_number, article_id, code, message FROM job_errors WHERE job_id = :job_id ORDER BY id DESC LIMIT 50');
+        $statement = $this->pdo->prepare('SELECT row_number, article_id, code, message, COUNT(*) AS occurrences FROM job_errors WHERE job_id = :job_id GROUP BY row_number, article_id, code, message ORDER BY MAX(id) DESC LIMIT 50');
         $statement->execute(['job_id' => $job['id']]);
         $job['errors'] = $statement->fetchAll();
         $job['summary'] = $job['summary'] === null ? [] : json_decode($job['summary'], true, flags: JSON_THROW_ON_ERROR);
+        $totals = $this->pdo->prepare('SELECT COUNT(DISTINCT article_id) AS affected_references, COUNT(*) AS records FROM job_errors WHERE job_id = ?');
+        $totals->execute([$job['id']]);
+        $totals = $totals->fetch();
+        $groups = $this->pdo->prepare('SELECT COUNT(*) FROM (SELECT 1 FROM job_errors WHERE job_id = ? GROUP BY row_number, article_id, code, message)');
+        $groups->execute([$job['id']]);
+        $job['summary']['error_count'] = (int) $totals['records'];
+        $job['summary']['incident_count'] = (int) $groups->fetchColumn();
+        $job['summary']['affected_reference_count'] = (int) $totals['affected_references'];
+
+        // Adapt legacy counters for display only; retain the original records in SQLite.
+        if ($job['action'] === 'sync' && $job['phase'] === 'sync' && !isset($job['summary']['lookup'])) {
+            $omitted = $this->pdo->prepare(<<<'SQL'
+                SELECT p.tariff, COUNT(*) AS skipped
+                FROM job_prices p
+                JOIN (SELECT DISTINCT article_id FROM job_errors
+                      WHERE job_id = ? AND code = 'variant_unmapped') e
+                  ON e.article_id = p.article_id
+                WHERE p.job_id = ? AND p.variant_id IS NULL
+                GROUP BY p.tariff
+                SQL);
+            $omitted->execute([$job['id'], $job['id']]);
+            $skipped = array_column($omitted->fetchAll(), 'skipped', 'tariff');
+            $prepared = array_column($this->expectedCounts((int) $job['id']), 'expected', 'tariff');
+            $unmapped = $this->pdo->prepare("SELECT COUNT(DISTINCT article_id) FROM job_errors WHERE job_id = ? AND code = 'variant_unmapped'");
+            $unmapped->execute([$job['id']]);
+            $job['summary']['unmapped_article_count'] = (int) $unmapped->fetchColumn();
+            foreach ($job['summary']['per_tariff'] ?? [] as $tariff => $counts) {
+                $counts['skipped'] = min((int) ($skipped[$tariff] ?? 0), (int) ($counts['changed'] ?? 0));
+                $counts['unchanged'] = max(0, (int) ($prepared[$tariff] ?? 0) - (int) ($counts['changed'] ?? 0));
+                $counts['changed'] = max(0, (int) ($counts['changed'] ?? 0) - $counts['skipped']);
+                $counts['failed'] = max(0, (int) ($counts['failed'] ?? 0) - $counts['skipped']);
+                $job['summary']['per_tariff'][$tariff] = $counts;
+            }
+            foreach (['changed', 'failed', 'skipped', 'unchanged'] as $key) {
+                $job['summary'][$key . '_count'] = array_sum(array_column($job['summary']['per_tariff'] ?? [], $key));
+            }
+        }
         return $job;
     }
 }

@@ -36,20 +36,7 @@ final class InitialLoad
 
         $summary['phase_label'] = 'Iniciando búsqueda de variantes en Shopify';
         $this->store->setProgress($jobId, 'running', 'variants_start', null, 0, 0, $summary);
-        $result = $this->shopify->graphql(<<<'GQL'
-            mutation MapVariants($query: String!) {
-              bulkOperationRunQuery(query: $query) {
-                bulkOperation { id status }
-                userErrors { field message }
-              }
-            }
-            GQL, ['query' => 'query { productVariants { edges { node { id sku } } } }']);
-        $payload = $result['bulkOperationRunQuery'];
-        ShopifyClient::assertNoUserErrors($payload);
-        $operationId = $payload['bulkOperation']['id'] ?? null;
-        if ($operationId === null) {
-            throw new RuntimeException('Shopify no inició la búsqueda masiva de variantes.');
-        }
+        $operationId = (new VariantResolver($this->shopify))->start();
         $summary['phase_label'] = 'Resolviendo SKU en Shopify';
         $this->store->setProgress($jobId, 'waiting_shopify', 'variants', $operationId, 0, $summary['eligible_articles'], $summary);
     }
@@ -151,31 +138,22 @@ final class InitialLoad
     private function finishVariants(int $jobId, string $path, array $summary, int $expectedObjects, string $operationId): void
     {
         $needed = array_fill_keys($this->store->articles($jobId), true);
-        $matches = [];
         $summary['phase_label'] = 'Revisando variantes de Shopify';
         $this->store->setProgress($jobId, 'running', 'variants_results', $operationId, 0, $expectedObjects, $summary);
-        $examined = 0;
-        foreach ($this->lines($path) as $variant) {
-            $examined++;
-            if ($examined % 1000 === 0) {
-                $this->store->setProgress($jobId, 'running', 'variants_results', $operationId, $examined, $expectedObjects, $summary);
-            }
-            $sku = trim((string) ($variant['sku'] ?? ''));
-            if (isset($needed[$sku])) {
-                $matches[$sku][] = (string) ($variant['id'] ?? '');
-            }
-        }
+        $outcomes = (new VariantResolver($this->shopify))->matchFile($path, array_keys($needed), function (int $examined) use ($jobId, $operationId, $expectedObjects, $summary): void {
+            $this->store->setProgress($jobId, 'running', 'variants_results', $operationId, $examined, $expectedObjects, $summary);
+        });
         $summary['phase_label'] = 'Relacionando referencias por SKU';
         $this->store->setProgress($jobId, 'running', 'variants_match', $operationId, 0, count($needed), $summary);
         $matched = 0;
         foreach ($needed as $article => $_) {
-            $ids = array_values(array_unique($matches[$article] ?? []));
-            if (count($ids) !== 1 || $ids[0] === '') {
-                $code = $ids === [] ? 'missing_sku' : 'ambiguous_sku';
-                $this->store->addError($jobId, null, (string) $article, $code, $ids === [] ? 'No hay una variante Shopify con ese SKU.' : 'Varias variantes Shopify tienen ese SKU.');
+            $outcome = $outcomes[$article];
+            if ($outcome['status'] !== 'unique') {
+                $code = $outcome['status'] === 'missing' ? 'missing_sku' : 'ambiguous_sku';
+                $this->store->addError($jobId, null, (string) $article, $code, $outcome['status'] === 'missing' ? 'No hay una variante Shopify con ese SKU.' : 'Varias variantes Shopify tienen ese SKU.');
                 $this->store->discardArticlePrices($jobId, (string) $article);
             } else {
-                $this->store->saveVariant((string) $article, $ids[0]);
+                $this->store->saveVariant((string) $article, $outcome['variant_id']);
             }
             $matched++;
             if ($matched % 250 === 0) {

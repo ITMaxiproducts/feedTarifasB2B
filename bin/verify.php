@@ -31,6 +31,7 @@ require_once $root . '/src/Config.php';
 require_once $root . '/src/StateStore.php';
 require_once $root . '/src/SourceReader.php';
 require_once $root . '/src/ShopifyClient.php';
+require_once $root . '/src/VariantResolver.php';
 require_once $root . '/src/InitialLoad.php';
 require_once $root . '/src/SyncPrices.php';
 require_once $root . '/src/ProgressPresenter.php';
@@ -93,7 +94,7 @@ $syncDisplay = ProgressPresenter::describe([
     'started_at' => gmdate(DATE_ATOM), 'completed_at' => gmdate(DATE_ATOM), 'progress_at' => gmdate(DATE_ATOM),
     'summary' => ['changed_count' => 2, 'sent_count' => 2, 'confirmed_count' => 1, 'failed_count' => 1],
 ]);
-if ($syncDisplay['progress'] !== '1 de 2 precios cambiados confirmados' || $syncDisplay['detail'] !== '2 enviados · 1 fallidos') {
+if ($syncDisplay['progress'] !== '1 de 2 precios a actualizar confirmados' || $syncDisplay['detail'] !== '2 precios enviados · 1 precios con error de envío o confirmación') {
     fwrite(STDERR, "El panel no presentó los conteos reales del sync.\n");
     $failures++;
 }
@@ -177,6 +178,43 @@ try {
         fwrite(STDERR, "La comparación de precios no distinguió el valor confirmado del nuevo cambio.\n");
         $failures++;
     }
+    // Legacy sync: two unmapped references repeated for ten tariffs, one real
+    // Shopify rejection and one unchanged reference. Display must separate them.
+    $legacyId = $syncStore->queueSync();
+    $legacyCounts = [];
+    foreach ($tariffs as $tariff) {
+        foreach (['UNMAPPED-A', 'UNMAPPED-B', 'REJECTED', 'UNCHANGED'] as $index => $article) {
+            $syncStore->addJobPrice($legacyId, $index + 1, $article, $tariff, '1.000', 'EUR');
+        }
+        foreach (['UNMAPPED-A', 'UNMAPPED-B'] as $index => $article) {
+            $syncStore->addError($legacyId, $index + 1, $article, 'variant_unmapped', 'Sin asociación local.');
+        }
+        $syncStore->addError($legacyId, 3, 'REJECTED', 'price_sync_failed', 'Shopify no confirmó este precio.');
+        $legacyCounts[$tariff] = ['changed' => 3, 'sent' => 1, 'confirmed' => 0, 'failed' => 3];
+    }
+    $syncStore->saveVariant('REJECTED', 'gid://shopify/ProductVariant/10');
+    $syncStore->saveVariant('UNCHANGED', 'gid://shopify/ProductVariant/11');
+    $syncStore->attachVariants($legacyId);
+    $legacySummary = ['article_count' => 4, 'tariff_count' => 10, 'per_tariff' => $legacyCounts,
+        'changed_count' => 30, 'sent_count' => 10, 'confirmed_count' => 0, 'failed_count' => 30];
+    $syncStore->setProgress($legacyId, 'running', 'sync', null, 10, 10, $legacySummary);
+    $syncStore->finish($legacyId, 'partial', 4, 10, $legacySummary);
+    $legacy = $syncStore->latest();
+    $legacyDisplay = $legacy['summary'];
+    if ($legacyDisplay['changed_count'] !== 10 || $legacyDisplay['failed_count'] !== 10 ||
+        $legacyDisplay['skipped_count'] !== 20 || $legacyDisplay['unchanged_count'] !== 10 ||
+        $legacyDisplay['affected_reference_count'] !== 3 || $legacyDisplay['incident_count'] !== 3 ||
+        $legacyDisplay['error_count'] !== 30 || count($legacy['errors']) !== 3 ||
+        $legacyDisplay !== $syncStore->jobStatus($legacyId)['summary']) {
+        fwrite(STDERR, "El panel confundió omisiones, errores reales y precios sin cambios de un sync antiguo.\n");
+        $failures++;
+    }
+    $omittedOnly = $syncStore->jobStatus($legacyId);
+    $omittedOnly['summary']['changed_count'] = 0;
+    if (ProgressPresenter::describe($omittedOnly)['progress'] !== 'No hay precios pendientes de actualizar entre las referencias asociadas a Shopify.') {
+        fwrite(STDERR, "El sync sin cambios se presentó como un envío fallido.\n");
+        $failures++;
+    }
     unset($syncStore);
     $second = $store->queueInitialLoad();
     if ($second <= $first) {
@@ -244,6 +282,15 @@ try {
         rmdir($envRoot . '/var');
     }
     rmdir($envRoot);
+}
+
+require_once __DIR__ . '/verify-variant-sync.php';
+try {
+    verifyVariantSync();
+    echo "Verificación offline correcta: búsqueda de variantes y sincronización en el mismo job.\n";
+} catch (Throwable $error) {
+    fwrite(STDERR, "Falló la verificación de variantes: {$error->getMessage()}\n");
+    $failures++;
 }
 
 if ($failures > 0) {

@@ -10,6 +10,10 @@ Al terminar, muestra precios confirmados frente a preparados. Si están disponib
 
 Para las sincronizaciones directas, muestra por tarifa los precios cambiados, enviados, confirmados y fallidos. Estos son conteos de precios; el progreso general de la etapa puede contar peticiones de hasta 250 precios y no debe compararse con el total de precios.
 
+El panel separa los precios **sin cambios**, **a actualizar**, **enviados**, **confirmados**, **con error de envío o confirmación** y **omitidos sin variante**. «A actualizar» incluye precios nuevos y modificados de referencias con una variante asociada. Los `variant_unmapped` no son envíos fallidos. El resumen cuenta referencias únicas con incidencias; la lista agrupa por fila, referencia, código y mensaje antes de limitarse a las 50 incidencias recientes. Las incidencias globales siguen visibles aunque no tengan referencia.
+
+Para operaciones existentes, `StateStore::hydrateJob()` adapta los contadores al leer el estado usando `job_prices` y las incidencias `variant_unmapped` del mismo job. No modifica el resumen ni los registros originales en SQLite. Tanto la página como `/status` usan esa presentación. Los precios sin cambios se calculan a partir de los preparados menos los candidatos originales; no incluyen referencias descartadas por validación SQL.
+
 ## 🏆 Benefits
 
 - El usuario ve actividad real sin interpretar `0 / 160` como una carga bloqueada.

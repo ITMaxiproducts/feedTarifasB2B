@@ -7,6 +7,7 @@ require_once __DIR__ . '/StateStore.php';
 require_once __DIR__ . '/PreviewValidator.php';
 require_once __DIR__ . '/SourceReader.php';
 require_once __DIR__ . '/ShopifyClient.php';
+require_once __DIR__ . '/VariantResolver.php';
 require_once __DIR__ . '/InitialLoad.php';
 require_once __DIR__ . '/SyncPrices.php';
 require_once __DIR__ . '/ProgressPresenter.php';

@@ -44,20 +44,77 @@ final class SyncPrices
             return;
         }
 
+        $articles = $this->store->unmappedArticles($jobId);
+        $summary['lookup'] = ['requested' => count($articles), 'unique' => 0, 'missing' => 0, 'ambiguous' => 0, 'inconclusive' => 0];
+        if ($articles !== []) {
+            $summary['phase_label'] = 'Buscando variantes para referencias sin asociación';
+            $this->store->setProgress($jobId, 'running', 'variants_start', null, 0, count($articles), $summary);
+            try {
+                $operationId = (new VariantResolver($this->shopify))->start();
+                $this->store->setProgress($jobId, 'waiting_shopify', 'variants', $operationId, 0, count($articles), $summary);
+                return;
+            } catch (Throwable $error) {
+                $this->store->addError($jobId, null, null, 'variant_lookup_failed', $error->getMessage());
+                $summary['lookup']['inconclusive'] = count($articles);
+            }
+        }
+        $this->sendPrices($jobId, $summary);
+    }
+
+    public function poll(array $job): void
+    {
+        if ($job['phase'] !== 'variants') {
+            throw new RuntimeException('Fase de sincronización desconocida.');
+        }
+        $jobId = (int) $job['id'];
+        $summary = is_array($job['summary']) ? $job['summary'] : json_decode($job['summary'], true, flags: JSON_THROW_ON_ERROR);
+        $articles = $this->store->unmappedArticles($jobId);
+        $result = (new VariantResolver($this->shopify))->poll((string) $job['operation_id'], $this->config->storagePath . '/sync-' . $jobId . '-variants.jsonl', $articles);
+        $summary['shopify_status'] = $result['shopify_status'];
+        if ($result['status'] === 'pending') {
+            $this->store->setProgress($jobId, 'waiting_shopify', 'variants', $job['operation_id'], $result['object_count'], count($articles), $summary);
+            return;
+        }
+        if ($result['status'] === 'failed') {
+            $this->store->addError($jobId, null, null, 'variant_lookup_failed', $result['error']);
+            $summary['lookup']['inconclusive'] = count($articles);
+        } else {
+            $summary['phase_label'] = 'Relacionando referencias por SKU';
+            $this->store->setProgress($jobId, 'running', 'variants_match', $job['operation_id'], 0, count($articles), $summary);
+            foreach ($result['outcomes'] as $article => $outcome) {
+                $summary['lookup'][$outcome['status']]++;
+                if ($outcome['status'] === 'unique') {
+                    $this->store->saveVariant((string) $article, $outcome['variant_id']);
+                } else {
+                    $this->store->addError($jobId, null, (string) $article, $outcome['status'] === 'missing' ? 'missing_sku' : 'ambiguous_sku', $outcome['status'] === 'missing' ? 'No hay una variante Shopify con ese SKU.' : 'Varias variantes Shopify tienen ese SKU.');
+                }
+            }
+        }
+        $this->sendPrices($jobId, $summary);
+    }
+
+    private function sendPrices(int $jobId, array $summary): void
+    {
+        $catalogs = array_column($this->store->catalogs(), null, 'tariff');
         $this->store->attachVariants($jobId);
-        $counts = array_fill_keys($this->config->tariffColumns, ['changed' => 0, 'sent' => 0, 'confirmed' => 0, 'failed' => 0]);
+        if ($summary['lookup']['inconclusive'] > 0) {
+            foreach ($this->store->unmappedArticles($jobId) as $article) {
+                $this->store->addError($jobId, null, $article, 'variant_lookup_inconclusive', 'La búsqueda no permitió resolver este SKU; se volverá a comprobar en otra sincronización.');
+            }
+        }
+        $counts = array_fill_keys($this->config->tariffColumns, ['changed' => 0, 'sent' => 0, 'confirmed' => 0, 'failed' => 0, 'skipped' => 0, 'unchanged' => 0]);
         $changed = [];
         foreach ($this->store->syncPrices($jobId) as $price) {
             $tariff = $price['tariff'];
+            if ($price['variant_id'] === null) {
+                $counts[$tariff]['skipped']++;
+                continue;
+            }
             if ($price['synced_amount'] !== null && $price['synced_amount'] === $price['amount'] && $price['synced_currency'] === $price['currency']) {
+                $counts[$tariff]['unchanged']++;
                 continue;
             }
             $counts[$tariff]['changed']++;
-            if ($price['variant_id'] === null) {
-                $counts[$tariff]['failed']++;
-                $this->store->addError($jobId, (int) $price['row_number'], $price['article_id'], 'variant_unmapped', 'No existe un Shopify ProductVariant asociado a esta referencia; se reintentará cuando se resuelva.');
-                continue;
-            }
             $changed[$tariff][] = $price;
         }
 
@@ -66,6 +123,9 @@ final class SyncPrices
             $expectedRequests += (int) ceil(count($prices) / 250);
         }
         $summary['per_tariff'] = $counts;
+        $summary['skipped_count'] = array_sum(array_column($counts, 'skipped'));
+        $summary['unchanged_count'] = array_sum(array_column($counts, 'unchanged'));
+        $summary['unmapped_article_count'] = count($this->store->unmappedArticles($jobId));
         $summary['phase_label'] = 'Enviando cambios de precios a Shopify';
         $this->store->setProgress($jobId, 'running', 'sync', null, 0, $expectedRequests, $summary);
 
@@ -132,6 +192,10 @@ final class SyncPrices
         $summary['error_count'] = $this->store->errorCount($jobId);
         $summary['phase_label'] = 'Resultado de la sincronización';
         $status = $summary['error_count'] === 0 ? 'completed' : 'partial';
+        if ($summary['confirmed_count'] === 0 && $summary['unchanged_count'] === 0 && $summary['error_count'] > 0) {
+            $status = 'failed';
+        }
+        $this->store->setProgress($jobId, 'running', 'sync', null, $requestNumber, $expectedRequests, $summary);
         $this->store->finish($jobId, $status, $summary['article_count'], $summary['tariff_count'], $summary);
     }
 }

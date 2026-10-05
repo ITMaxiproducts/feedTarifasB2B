@@ -30,6 +30,14 @@ final class ProgressPresenter
             'completed_at' => $job['completed_at'] ?? null,
             'article_count' => (int) $job['article_count'],
             'error_count' => (int) ($summary['error_count'] ?? 0),
+            'affected_reference_count' => (int) ($summary['affected_reference_count'] ?? 0),
+            'lead' => match ($status) {
+                'completed' => 'Proceso completado correctamente.',
+                'partial' => 'Proceso completado con referencias omitidas o precios sin confirmar. Revisa el desglose.',
+                'failed' => 'La operación no pudo completarse. Revisa las incidencias para continuar.',
+                'pending' => 'La acción está en cola y el worker la procesará en segundo plano.',
+                default => 'La operación continúa en segundo plano.',
+            },
         ];
 
         if (!$active) {
@@ -41,8 +49,18 @@ final class ProgressPresenter
             if ($job['action'] === 'preview') {
                 $display['progress'] = (int) ($summary['valid_rows'] ?? 0) . ' filas válidas de ' . (int) $job['article_count'] . ' leídas';
             } elseif ($job['action'] === 'sync') {
-                $display['progress'] = (int) ($summary['confirmed_count'] ?? 0) . ' de ' . (int) ($summary['changed_count'] ?? 0) . ' precios cambiados confirmados';
-                $display['detail'] = (int) ($summary['sent_count'] ?? 0) . ' enviados · ' . (int) ($summary['failed_count'] ?? 0) . ' fallidos';
+                $changed = (int) ($summary['changed_count'] ?? 0);
+                $display['progress'] = $changed > 0
+                    ? (int) ($summary['confirmed_count'] ?? 0) . ' de ' . $changed . ' precios a actualizar confirmados'
+                    : ($phase === 'sync' ? 'No hay precios pendientes de actualizar entre las referencias asociadas a Shopify.' : 'La sincronización terminó antes de comparar los precios.');
+                $display['detail'] = (int) ($summary['sent_count'] ?? 0) . ' precios enviados · ' . (int) ($summary['failed_count'] ?? 0) . ' precios con error de envío o confirmación';
+                if (isset($summary['skipped_count'])) {
+                    $display['detail'] .= ' · ' . (int) ($summary['unchanged_count'] ?? 0) . ' precios sin cambios · ' . (int) ($summary['unmapped_article_count'] ?? 0) . ' referencias omitidas sin variante asociada (' . (int) $summary['skipped_count'] . ' precios)';
+                }
+                if (isset($summary['lookup'])) {
+                    $lookup = $summary['lookup'];
+                    $display['detail'] .= ' · Búsqueda de SKU: ' . (int) $lookup['unique'] . ' asociados, ' . (int) $lookup['missing'] . ' ausentes, ' . (int) $lookup['ambiguous'] . ' ambiguos, ' . (int) $lookup['inconclusive'] . ' sin resultado concluyente';
+                }
             } else {
                 $prepared = 0;
                 $confirmed = 0;
@@ -75,10 +93,14 @@ final class ProgressPresenter
         } elseif ($phase === 'sync') {
             $display['stage'] = 'Sincronizando cambios en Shopify';
             $display['progress'] = (int) ($summary['confirmed_count'] ?? 0) . ' precios confirmados';
-            $display['detail'] = (int) ($summary['sent_count'] ?? 0) . ' enviados; ' . (int) ($summary['failed_count'] ?? 0) . ' fallidos de ' . $expected . ' solicitudes.';
+            $display['detail'] = (int) ($summary['sent_count'] ?? 0) . ' precios enviados · ' . (int) ($summary['failed_count'] ?? 0) . ' precios con error · ' . $count . ' de ' . $expected . ' solicitudes procesadas';
         } elseif ($phase === 'variants' && $status === 'waiting_shopify') {
             $display['progress'] = $count > 0 ? $count . ' objetos examinados por Shopify' : 'Shopify está buscando variantes';
             $display['detail'] = 'La búsqueda se comprueba periódicamente.';
+            if ($job['action'] === 'sync') {
+                $display['stage'] = 'Buscando variantes para referencias sin asociación';
+                $display['detail'] = (int) ($summary['lookup']['requested'] ?? $expected) . ' referencias pendientes de asociación. El contador de objetos de Shopify no equivale a referencias.';
+            }
             if (($summary['phase_label'] ?? '') === 'Descargando resultados de Shopify') {
                 $display['progress'] = 'Descargando resultados de Shopify';
             }

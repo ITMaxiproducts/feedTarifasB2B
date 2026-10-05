@@ -28,17 +28,20 @@ try {
             fwrite(STDOUT, "Sincronización nocturna #{$nightlyJobId} encolada para {$now->format('Y-m-d')}.\n");
         }
     }
-    $waiting = $store->waitingInitialLoad();
+    $waiting = $store->waitingShopifyJob();
     if ($waiting !== null) {
         try {
-            (new InitialLoad($config, $store, new ShopifyClient($config)))->poll($waiting);
+            $handler = $waiting['action'] === 'sync'
+                ? new SyncPrices($config, $store, new ShopifyClient($config))
+                : new InitialLoad($config, $store, new ShopifyClient($config));
+            $handler->poll($waiting);
         } catch (Throwable $error) {
-            fwrite(STDERR, "No se pudo consultar la carga inicial #{$waiting['id']}; cron volverá a intentarlo: {$error->getMessage()}\n");
+            fwrite(STDERR, "No se pudo continuar la operación #{$waiting['id']}; cron volverá a intentarlo: {$error->getMessage()}\n");
         }
     }
     $processedJobs = 0;
-    if ($waiting !== null && $store->activeInitialLoad()) {
-        fwrite(STDOUT, "La carga inicial sigue activa; las demás acciones quedan en cola.\n");
+    if ($store->waitingShopifyJob() !== null) {
+        fwrite(STDOUT, "La operación Shopify sigue activa; las demás acciones quedan en cola.\n");
     } else {
     while (($job = $store->claimNext()) !== null) {
         $processedJobs++;
@@ -49,15 +52,18 @@ try {
             if ($job['action'] === 'initial_load') {
                 (new InitialLoad($config, $store, new ShopifyClient($config)))->start($jobId);
                 fwrite(STDOUT, "Carga inicial #{$jobId} preparada o bloqueada; consulta el panel.\n");
-                if ($store->activeInitialLoad()) {
-                    fwrite(STDOUT, "La carga inicial sigue activa; las demás acciones quedan en cola.\n");
+                if ($store->waitingShopifyJob() !== null) {
+                    fwrite(STDOUT, "La operación Shopify sigue activa; las demás acciones quedan en cola.\n");
                     break;
                 }
                 continue;
             }
             if ($job['action'] === 'sync') {
                 (new SyncPrices($config, $store, new ShopifyClient($config)))->start($jobId, $job);
-                fwrite(STDOUT, "Sincronización #{$jobId} finalizada o con incidencias; consulta el panel.\n");
+                fwrite(STDOUT, "Sincronización #{$jobId} preparada o finalizada; consulta el panel.\n");
+                if ($store->waitingShopifyJob() !== null) {
+                    break;
+                }
                 continue;
             }
             $summary = (new SourceReader($config))->preview(

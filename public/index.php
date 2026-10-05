@@ -153,6 +153,29 @@ function ui_datetime(?string $value, bool $includeSeconds = false): string
     }
 }
 
+function ui_incident_label(string $code): string
+{
+    return match ($code) {
+        'variant_unmapped' => 'Sin variante asociada',
+        'missing_sku' => 'SKU no encontrado en Shopify',
+        'ambiguous_sku' => 'SKU repetido en Shopify',
+        'duplicate_article_id' => 'Referencia repetida en SQL',
+        'price_precision' => 'Demasiados decimales',
+        'missing_price' => 'Precio ausente',
+        'invalid_price' => 'Precio inválido',
+        'price_sync_failed', 'price_unconfirmed' => 'Precio sin confirmar',
+        'price_sync_request_failed' => 'Error al enviar precios',
+        default => $code,
+    };
+}
+
+function ui_incident_message(array $error): string
+{
+    return $error['code'] === 'variant_unmapped'
+        ? 'Referencia omitida: no tiene una variante Shopify asociada. No se han enviado sus precios.'
+        : (string) $error['message'];
+}
+
 function ui_job_title(array $job): string
 {
     return match ($job['action']) {
@@ -331,25 +354,19 @@ function ui_step_position(array $job, array $display): int
                 $eligibleArticles = (int) ($summary['eligible_articles'] ?? $summary['valid_rows'] ?? 0);
                 $errorCount = (int) ($summary['error_count'] ?? 0);
                 [$secondaryMetricValue, $secondaryMetricLabel, $fourthMetricValue, $fourthMetricLabel, $fourthMetricClass] = match ($shownJob['action']) {
-                    'sync' => [(int) ($summary['changed_count'] ?? 0), 'Precios cambiados', $confirmedTotal, 'Precios confirmados', 'metric-success'],
+                    'sync' => [(int) ($summary['changed_count'] ?? 0), 'Precios a actualizar', $confirmedTotal, 'Precios confirmados', 'metric-success'],
                     'preview' => [(int) ($summary['valid_rows'] ?? 0), 'Filas válidas', (int) ($summary['invalid_rows'] ?? 0), 'Filas con incidencias', 'metric-warning'],
                     default => [$eligibleArticles, 'Referencias aptas', $confirmedTotal, 'Precios confirmados', 'metric-success'],
                 };
                 $statusStyle = ui_status_style((string) $shownJob['status']);
                 $stepPosition = ui_step_position($shownJob, $display);
                 $isFinalWarning = !$display['active'] && in_array($shownJob['status'], ['partial', 'failed'], true);
-                $jobLead = match ($shownJob['status']) {
-                    'completed' => 'Proceso completado correctamente.',
-                    'partial' => 'Proceso completado. Se detectaron incidencias que requieren revisión.',
-                    'failed' => 'La operación no pudo completarse. Revisa las incidencias para continuar.',
-                    'pending' => 'La acción está en cola y el worker la procesará en segundo plano.',
-                    default => 'La operación continúa en segundo plano.',
-                };
+                $jobLead = $display['lead'];
                 $steps = match ($shownJob['action']) {
                     'sync' => [
                         ['Fuente', 'Lectura de artículos', ui_number((int) $shownJob['article_count']) . ' leídos'],
-                        ['Comparación', 'Detección de cambios', ui_number((int) ($summary['changed_count'] ?? 0)) . ' cambiados'],
-                        ['Shopify', 'Sincronización de precios', ui_number((int) ($summary['confirmed_count'] ?? 0)) . ' confirmados'],
+                        ['Comparación', 'Precios con variante asociada', ui_number((int) ($summary['changed_count'] ?? 0)) . ' a actualizar'],
+                        ['Shopify', 'Envío y confirmación', ui_number((int) ($summary['sent_count'] ?? 0)) . ' enviados · ' . ui_number((int) ($summary['confirmed_count'] ?? 0)) . ' confirmados'],
                         ['Resultado', $display['active'] ? 'Proceso en curso' : 'Proceso finalizado', $display['status_label']],
                     ],
                     'preview' => [
@@ -393,10 +410,13 @@ function ui_step_position(array $job, array $display): int
                         <div class="metric-strip" aria-label="Resumen de la operación">
                             <div class="metric"><span class="metric-value" data-job-articles><?= escape(ui_number((int) $shownJob['article_count'])) ?></span><span class="metric-label">Artículos leídos</span></div>
                             <div class="metric"><span class="metric-value"><?= escape(ui_number($secondaryMetricValue)) ?></span><span class="metric-label"><?= escape($secondaryMetricLabel) ?></span></div>
-                            <div class="metric metric-warning"><span class="metric-value" data-job-errors><?= escape(ui_number($errorCount)) ?></span><span class="metric-label">Incidencias</span></div>
+                            <div class="metric metric-warning"><span class="metric-value" data-job-errors><?= escape(ui_number((int) ($summary['affected_reference_count'] ?? 0))) ?></span><span class="metric-label">Referencias con incidencias</span></div>
                             <div class="metric <?= escape($fourthMetricClass) ?>"><span class="metric-value"><?= escape(ui_number($fourthMetricValue)) ?></span><span class="metric-label"><?= escape($fourthMetricLabel) ?></span></div>
-                            <div class="metric"><span class="metric-value"><?= escape(ui_number((int) $shownJob['tariff_count'])) ?></span><span class="metric-label">Tarifas procesadas</span></div>
+                            <div class="metric"><span class="metric-value"><?= escape(ui_number((int) $shownJob['tariff_count'])) ?></span><span class="metric-label">Tarifas de la operación</span></div>
                         </div>
+                        <?php if ($shownJob['action'] === 'sync' && isset($summary['skipped_count'])): ?>
+                            <p class="small text-secondary mt-3 mb-0"><strong><?= escape(ui_number((int) $summary['unchanged_count'])) ?> precios sin cambios</strong>: ya estaban confirmados y no se vuelven a enviar. <strong><?= escape(ui_number((int) $summary['unmapped_article_count'])) ?> referencias omitidas</strong> por falta de variante asociada (<?= escape(ui_number((int) $summary['skipped_count'])) ?> precios). Estas omisiones no son errores de envío a Shopify.</p>
+                        <?php endif; ?>
                     </section>
 
                     <section class="app-card mb-3" aria-labelledby="steps-<?= (int) $shownJob['id'] ?>">
@@ -434,8 +454,9 @@ function ui_step_position(array $job, array $display): int
                     <section class="app-card mb-3" aria-labelledby="incidents-<?= (int) $shownJob['id'] ?>">
                         <div class="section-heading d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2">
                             <div>
-                                <h3 id="incidents-<?= (int) $shownJob['id'] ?>" class="h5 mb-1">Incidencias (<?= escape(ui_number($errorCount)) ?>)</h3>
-                                <p class="small text-secondary mb-0">Las referencias afectadas se omiten; las demás continúan.</p>
+                                <h3 id="incidents-<?= (int) $shownJob['id'] ?>" class="h5 mb-1">Incidencias por referencia y motivo (<?= escape(ui_number((int) ($summary['incident_count'] ?? $errorCount))) ?>)</h3>
+                                <p class="small text-secondary mb-0">Mostramos hasta 50 incidencias recientes, agrupando las repeticiones de una referencia. Las incidencias sin referencia corresponden a la operación.</p>
+                                <?php if ($shownJob['action'] === 'sync'): ?><p class="small text-secondary mt-1 mb-0">Sin variante asociada: falta la relación guardada entre el SKU y Shopify. No se envían sus precios. Los SKU nuevos se comprueban automáticamente durante la sincronización.</p><?php endif; ?>
                             </div>
                             <?php if ($hiddenErrors !== []): ?>
                                 <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#<?= escape($collapseId) ?>" aria-expanded="false" aria-controls="<?= escape($collapseId) ?>">Ver más incidencias recientes</button>
@@ -450,8 +471,8 @@ function ui_step_position(array $job, array $display): int
                                     <tbody>
                                     <?php foreach ($visibleErrors as $jobError): ?>
                                         <tr>
-                                            <th scope="row"><span class="d-block"><?= escape($jobError['article_id'] ?? 'Sin referencia') ?></span><span class="incident-code"><?= escape($jobError['code']) ?></span></th>
-                                            <td><?= escape($jobError['message']) ?></td>
+                                            <th scope="row"><span class="d-block"><?= escape($jobError['article_id'] ?? 'Operación general') ?></span><span class="incident-code"><?= escape(ui_incident_label($jobError['code'])) ?></span></th>
+                                            <td><?= escape(ui_incident_message($jobError)) ?></td>
                                             <td><?= escape($jobError['row_number'] ?? '—') ?></td>
                                         </tr>
                                     <?php endforeach; ?>
@@ -460,8 +481,8 @@ function ui_step_position(array $job, array $display): int
                                         <tbody class="collapse" id="<?= escape($collapseId) ?>">
                                         <?php foreach ($hiddenErrors as $jobError): ?>
                                             <tr>
-                                                <th scope="row"><span class="d-block"><?= escape($jobError['article_id'] ?? 'Sin referencia') ?></span><span class="incident-code"><?= escape($jobError['code']) ?></span></th>
-                                                <td><?= escape($jobError['message']) ?></td>
+                                                <th scope="row"><span class="d-block"><?= escape($jobError['article_id'] ?? 'Operación general') ?></span><span class="incident-code"><?= escape(ui_incident_label($jobError['code'])) ?></span></th>
+                                                <td><?= escape(ui_incident_message($jobError)) ?></td>
                                                 <td><?= escape($jobError['row_number'] ?? '—') ?></td>
                                             </tr>
                                         <?php endforeach; ?>
@@ -504,9 +525,10 @@ function ui_step_position(array $job, array $display): int
                                         </div>
                                         <div class="tab-pane fade" id="tariffs-pane-<?= (int) $shownJob['id'] ?>" role="tabpanel" aria-labelledby="tariffs-tab-<?= (int) $shownJob['id'] ?>" tabindex="0">
                                             <?php if ($perTariff === []): ?><p class="text-secondary mb-0">Esta operación no contiene un desglose por tarifa.</p>
-                                            <?php else: ?><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Tarifa</th><?php if ($shownJob['action'] === 'sync'): ?><th>Cambiados</th><th>Enviados</th><th>Confirmados</th><th>Fallidos</th><?php else: ?><th>Preparados</th><th>Confirmados</th><?php endif; ?></tr></thead><tbody>
-                                                <?php foreach ($perTariff as $tariff => $counts): ?><tr><th><?= escape($tariff) ?></th><?php if ($shownJob['action'] === 'sync'): ?><td><?= escape(ui_number((int) ($counts['changed'] ?? 0))) ?></td><td><?= escape(ui_number((int) ($counts['sent'] ?? 0))) ?></td><td><?= escape(ui_number((int) ($counts['confirmed'] ?? 0))) ?></td><td><?= escape(ui_number((int) ($counts['failed'] ?? 0))) ?></td><?php else: ?><td><?= escape(ui_number((int) ($counts['prepared'] ?? 0))) ?></td><td><?= escape(ui_number((int) ($counts['confirmed'] ?? 0))) ?></td><?php endif; ?></tr><?php endforeach; ?>
+                                            <?php else: ?><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Tarifa</th><?php if ($shownJob['action'] === 'sync'): ?><th>Sin cambios</th><th>A actualizar</th><th>Enviados</th><th>Confirmados</th><th>Errores de envío o confirmación</th><th>Omitidos sin variante</th><?php else: ?><th>Preparados</th><th>Confirmados</th><?php endif; ?></tr></thead><tbody>
+                                                <?php foreach ($perTariff as $tariff => $counts): ?><tr><th><?= escape($tariff) ?></th><?php if ($shownJob['action'] === 'sync'): ?><td><?= escape(ui_number((int) ($counts['unchanged'] ?? 0))) ?></td><td><?= escape(ui_number((int) ($counts['changed'] ?? 0))) ?></td><td><?= escape(ui_number((int) ($counts['sent'] ?? 0))) ?></td><td><?= escape(ui_number((int) ($counts['confirmed'] ?? 0))) ?></td><td><?= escape(ui_number((int) ($counts['failed'] ?? 0))) ?></td><td><?= escape(ui_number((int) ($counts['skipped'] ?? 0))) ?></td><?php else: ?><td><?= escape(ui_number((int) ($counts['prepared'] ?? 0))) ?></td><td><?= escape(ui_number((int) ($counts['confirmed'] ?? 0))) ?></td><?php endif; ?></tr><?php endforeach; ?>
                                             </tbody></table></div><?php endif; ?>
+                                            <?php if ($shownJob['action'] === 'sync'): ?><p class="form-text mt-2">Cada celda cuenta precios de esa tarifa. Una referencia omitida puede tener un precio en cada tarifa; el resumen superior cuenta referencias únicas. «A actualizar» incluye precios nuevos y cambios respecto al último valor confirmado.</p><?php endif; ?>
                                             <?php if ($display['active'] && $shownJob['phase'] === 'prices'): ?><p class="form-text mt-2">Los precios confirmados se cuentan al recibir las respuestas finales de Shopify.</p><?php endif; ?>
                                         </div>
                                         <div class="tab-pane fade" id="data-pane-<?= (int) $shownJob['id'] ?>" role="tabpanel" aria-labelledby="data-tab-<?= (int) $shownJob['id'] ?>" tabindex="0">
@@ -593,11 +615,11 @@ document.addEventListener('click', async (event) => {
                 card.querySelector('[data-job-status-box]').className = `status-badge status-badge-${style}`;
                 card.querySelector('[data-job-status-icon]').className = `bi bi-${icon}`;
                 card.querySelector('[data-job-status]').textContent = data.stage;
-                card.querySelector('[data-job-stage]').textContent = data.status_label;
+                card.querySelector('[data-job-stage]').textContent = data.lead;
                 card.querySelector('[data-job-progress]').textContent = data.progress;
                 card.querySelector('[data-job-detail]').textContent = data.detail;
                 card.querySelector('[data-job-articles]').textContent = numberLabel.format(data.article_count);
-                card.querySelector('[data-job-errors]').textContent = numberLabel.format(data.error_count);
+                card.querySelector('[data-job-errors]').textContent = numberLabel.format(data.affected_reference_count);
                 card.querySelector('[data-job-network]').textContent = '';
                 card.dataset.lastActivity = data.last_activity;
             }
