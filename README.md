@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Validador de tarifas Shopify
 
 Panel pequeño en PHP para validar las diez tarifas de SQL Server, iniciar una carga inicial y sincronizar cambios de precios en Shopify. El panel solo encola acciones; `bin/worker.php`, ejecutado por cron de cPanel, procesa la fuente, resuelve variantes por SKU, sigue las operaciones masivas y envía cambios incrementales. Cada resultado y error queda visible en el panel.
