@@ -1,0 +1,9 @@
+Options -Indexes
+RewriteEngine On
+
+# Deny direct requests for environment files, source code, dependencies, and state.
+RewriteRule ^(?:\.env(?:\.example)?|\.gitignore|README\.md|\.agents|\.git|bin|sql|src|var)(?:/|$) - [F,L,NC]
+
+# Serve the public directory while keeping the project root usable at /tools/.
+RewriteRule ^public(?:/|$) - [L]
+RewriteRule ^(.*)$ public/$1 [L]

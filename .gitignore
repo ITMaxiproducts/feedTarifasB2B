@@ -1,0 +1,6 @@
+/var/*
+!/var/.htaccess
+!/var/.gitkeep
+/.env
+/vendor/
+.env.example

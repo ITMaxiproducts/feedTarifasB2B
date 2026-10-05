@@ -1,0 +1,81 @@
+WITH PRECIOS_BASE AS
+(
+    SELECT
+        ITM.ITMREF_0 AS IdArtículo,
+        MARCA.TEXTE_0 AS Marca,
+        CONVERT(DECIMAL(18,3), ROUND(SP.PRI_0 * 1.1, 3)) AS [12060]
+    FROM dbo.ITMMASTER AS ITM
+    INNER JOIN dbo.SPRICLIST AS SP
+        ON ITM.ITMREF_0 = SP.PLICRI2_0
+    LEFT OUTER JOIN dbo.ATEXTRA AS MARCA
+        ON MARCA.CODFIC_0 = 'ATABDIV'
+        AND MARCA.ZONE_0 = 'LNGDES'
+        AND MARCA.LANGUE_0 = 'SPA'
+        AND MARCA.IDENT1_0 = '24'
+        AND MARCA.IDENT2_0 = ITM.TSICOD_4
+    WHERE
+        ITM.CPY_0 <> N'1100'
+        AND ITM.ZVISIBLENTV_0 = 2
+        AND SP.PLI_0 = N'T00'
+        AND SP.PLICRI1_0 = N'1'
+
+    UNION ALL
+
+    SELECT
+        BOMD.ITMREF_0 AS IdArtículo,
+        MARCA.TEXTE_0 AS Marca,
+        CONVERT(DECIMAL(18,3), ROUND(BOMD.BOMQTY_0 * SP.PRI_0, 3)) AS [12060]
+    FROM dbo.BOMD AS BOMD
+    LEFT OUTER JOIN dbo.SPRICLIST AS SP
+        ON BOMD.CPNITMREF_0 = SP.PLICRI2_0
+    LEFT OUTER JOIN dbo.ITMMASTER AS ITM
+        ON BOMD.CPNITMREF_0 = ITM.ITMREF_0
+    LEFT OUTER JOIN dbo.ATEXTRA AS MARCA
+        ON MARCA.CODFIC_0 = 'ATABDIV'
+        AND MARCA.ZONE_0 = 'LNGDES'
+        AND MARCA.LANGUE_0 = 'SPA'
+        AND MARCA.IDENT1_0 = '24'
+        AND MARCA.IDENT2_0 = ITM.TSICOD_4
+    WHERE
+        (
+            BOMD.ITMREF_0 LIKE N'%CAJA'
+            OR BOMD.ITMREF_0 LIKE N'%DOSIF'
+        )
+        AND ITM.ZVISIBLENTV_0 = 2
+        AND SP.PLI_0 = N'T00'
+        AND SP.PLICRI1_0 = N'1'
+)
+
+SELECT
+    IdArtículo,
+    Marca,
+    [12060],
+    CONVERT(DECIMAL(18,3), [12060] * 1.10) AS [11961],
+    CONVERT(DECIMAL(18,3), [12060] * 1.05) AS [112463],
+    CONVERT(DECIMAL(18,3), [12060] * 1.21) AS [161],
+    CONVERT(DECIMAL(18,3), [12060] * 1.32) AS [187],
+    CONVERT(DECIMAL(18,3), [12060] * 1.25) AS [188],
+
+    CONVERT(DECIMAL(18,3),
+        [12060] *
+        CASE
+            WHEN UPPER(LTRIM(RTRIM(Marca))) = N'OHYEAH'
+                THEN 1.375
+            ELSE 1.25
+        END
+    ) AS [192],
+
+    CONVERT(DECIMAL(18,3),
+        [12060] *
+        CASE
+            WHEN UPPER(LTRIM(RTRIM(Marca))) = N'OHYEAH'
+                THEN 1.475
+            ELSE 1.35
+        END
+    ) AS [193],
+
+    CONVERT(DECIMAL(18,3), [12060] * 1.386) AS [194],
+    CONVERT(DECIMAL(18,3), [12060] * 1.58) AS [195]
+FROM PRECIOS_BASE
+ORDER BY
+    IdArtículo;
