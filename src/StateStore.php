@@ -371,6 +371,15 @@ final class StateStore
         ]);
     }
 
+    public function incidentsForExport(int $jobId): iterable
+    {
+        $statement = $this->pdo->prepare('SELECT row_number, article_id, code, message, COUNT(*) AS occurrences FROM job_errors WHERE job_id = ? GROUP BY row_number, article_id, code, message ORDER BY article_id, row_number, code, message');
+        $statement->execute([$jobId]);
+        while (($incident = $statement->fetch()) !== false) {
+            yield $incident;
+        }
+    }
+
     public function finish(int $jobId, string $status, int $articleCount, int $tariffCount, array $summary): void
     {
         $statement = $this->pdo->prepare(

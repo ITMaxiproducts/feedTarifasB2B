@@ -11,6 +11,7 @@ require_once __DIR__ . '/VariantResolver.php';
 require_once __DIR__ . '/InitialLoad.php';
 require_once __DIR__ . '/SyncPrices.php';
 require_once __DIR__ . '/ProgressPresenter.php';
+require_once __DIR__ . '/IncidentExport.php';
 
 function app_config(): Config
 {

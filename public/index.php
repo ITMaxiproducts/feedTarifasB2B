@@ -33,6 +33,40 @@ if ($basePath !== '' && ($path === $basePath || str_starts_with($path, $basePath
     $path = substr($path, strlen($basePath)) ?: '/';
 }
 
+if ($path === '/incidents.xlsx' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'GET') {
+    $requestedId = $_GET['id'] ?? null;
+    $exportPath = null;
+    try {
+        if (!is_string($requestedId) || preg_match('/^[1-9][0-9]*$/', $requestedId) !== 1) {
+            http_response_code(400);
+            throw new RuntimeException('Identificador de acción inválido.');
+        }
+        $job = app_store()->jobStatus((int) $requestedId);
+        if ($job === null) {
+            http_response_code(404);
+            throw new RuntimeException('Acción no encontrada.');
+        }
+        $exportPath = app_config()->storagePath . '/incidents-' . bin2hex(random_bytes(12)) . '.zip';
+        IncidentExport::write($exportPath, $job, app_store()->incidentsForExport((int) $job['id']));
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment; filename="incidencias-accion-' . (int) $job['id'] . '.xlsx"');
+        header('X-Content-Type-Options: nosniff');
+        header('Content-Length: ' . filesize($exportPath));
+        readfile($exportPath);
+    } catch (Throwable $error) {
+        if (http_response_code() === 200) {
+            http_response_code(500);
+        }
+        header('Content-Type: text/plain; charset=utf-8');
+        echo http_response_code() === 500 ? 'No se pudo generar el Excel de incidencias.' : $error->getMessage();
+    } finally {
+        if ($exportPath !== null && is_file($exportPath)) {
+            unlink($exportPath);
+        }
+    }
+    exit;
+}
+
 if ($path === '/status' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'GET') {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
@@ -458,9 +492,12 @@ function ui_step_position(array $job, array $display): int
                                 <p class="small text-secondary mb-0">Mostramos hasta 50 incidencias recientes, agrupando las repeticiones de una referencia. Las incidencias sin referencia corresponden a la operación.</p>
                                 <?php if ($shownJob['action'] === 'sync'): ?><p class="small text-secondary mt-1 mb-0">Sin variante asociada: falta la relación guardada entre el SKU y Shopify. No se envían sus precios. Los SKU nuevos se comprueban automáticamente durante la sincronización.</p><?php endif; ?>
                             </div>
+                            <div class="d-flex flex-wrap gap-2">
+                                <a class="btn btn-sm btn-outline-primary" href="<?= escape($basePath) ?>/incidents.xlsx?id=<?= (int) $shownJob['id'] ?>" aria-label="Descargar incidencias de la acción <?= (int) $shownJob['id'] ?> en Excel"><i class="bi bi-file-earmark-excel" aria-hidden="true"></i> Descargar incidencias en Excel</a>
                             <?php if ($hiddenErrors !== []): ?>
                                 <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#<?= escape($collapseId) ?>" aria-expanded="false" aria-controls="<?= escape($collapseId) ?>">Ver más incidencias recientes</button>
                             <?php endif; ?>
+                            </div>
                         </div>
                         <?php if ($shownJob['errors'] === []): ?>
                             <div class="p-4 d-flex gap-2 align-items-center text-success"><i class="bi bi-check-circle-fill" aria-hidden="true"></i><span>No hay incidencias registradas en esta operación.</span></div>
