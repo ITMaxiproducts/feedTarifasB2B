@@ -104,6 +104,12 @@ final class ProgressPresenter
             if (($summary['phase_label'] ?? '') === 'Descargando resultados de Shopify') {
                 $display['progress'] = 'Descargando resultados de Shopify';
             }
+        } elseif ($phase === 'variants_retry') {
+            $display['stage'] = 'Reintentando la búsqueda de variantes';
+            $display['progress'] = 'El cron volverá a consultar la misma operación Shopify';
+            $display['detail'] = (string) ($summary['lookup_retry_error'] ?? 'Resultado temporalmente no disponible');
+        } elseif ($phase === 'sync_ready') {
+            $display['progress'] = 'Búsqueda finalizada; preparando la comparación de precios';
         } elseif ($phase === 'variants_results') {
             $display['progress'] = $count . ' variantes descargadas y revisadas';
         } elseif ($phase === 'variants_match') {

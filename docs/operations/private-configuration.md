@@ -8,6 +8,10 @@ Declara moneda y decimales para los diez códigos de `PRICE_TARIFF_COLUMNS`. La 
 
 `NIGHTLY_SYNC_TIME` define la hora local `HH:MM` para encolar el sync diario y por defecto usa `02:00`. Mantén el cron cada minuto para atender esa hora, acciones manuales y operaciones Shopify pendientes. El registro por fecha hace idempotente la creación del job diario.
 
+El cron de producción ya ejecuta el worker cada minuto; la recuperación de búsquedas no requiere cambiar su frecuencia ni la configuración privada. Al adquirir el bloqueo, el worker recupera las etapas de búsqueda de sincronización con ID de operación y precios preparados. Consulta esa operación antes de reclamar acciones nuevas: manuales y nocturnas esperan en cola mientras siga pendiente o reintentándose. El panel solo consulta SQLite y no inicia esas continuaciones.
+
+Si una consulta o descarga falla temporalmente, conserva SQLite y los archivos privados: el siguiente minuto vuelve a consultar el mismo ID y descarga de nuevo el resultado completo. No borres el estado ni repitas la carga inicial para descubrir SKU nuevos. Un fallo terminal deja constancia y permite sincronizar las referencias ya asociadas; las no resueltas se comprueban en la próxima sincronización. Revisa el motivo visible si `variants_retry` persiste. Interrupciones sin operación guardada o durante el envío directo se marcan fallidas; una nueva sincronización conserva los precios confirmados y reintenta los cambios pendientes.
+
 ## 🏆 Benefits
 
 - El token permanece en el `.env` ignorado por Git y no aparece en el comando cron ni en la página.

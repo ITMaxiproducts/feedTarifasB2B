@@ -29,6 +29,21 @@ final class VariantResolver
 
     public function poll(string $operationId, string $resultPath, array $articleIds): array
     {
+        try {
+            return $this->pollResult($operationId, $resultPath, $articleIds);
+        } catch (Throwable $error) {
+            if ($error instanceof ShopifyRequestException && !$error->transient) {
+                return ['status' => 'failed', 'shopify_status' => 'REQUEST_FAILED', 'object_count' => 0,
+                    'error' => $error->getMessage(), 'outcomes' => []];
+            }
+            // No matching conclusions may be drawn from an unavailable status,
+            // incomplete download or malformed JSONL. Re-poll the saved ID.
+            return ['status' => 'temporary_failure', 'error' => $error->getMessage(), 'outcomes' => []];
+        }
+    }
+
+    private function pollResult(string $operationId, string $resultPath, array $articleIds): array
+    {
         $data = $this->shopify->graphql(<<<'GQL'
             query BulkStatus($id: ID!) {
               bulkOperation(id: $id) { id status errorCode objectCount url partialDataUrl }
@@ -36,7 +51,8 @@ final class VariantResolver
             GQL, ['id' => $operationId]);
         $operation = $data['bulkOperation'] ?? null;
         if ($operation === null || $operation['id'] !== $operationId) {
-            throw new RuntimeException('No se encontró la operación Shopify ' . $operationId . '.');
+            return ['status' => 'failed', 'shopify_status' => 'NOT_FOUND', 'object_count' => 0,
+                'error' => 'No se encontró la operación Shopify ' . $operationId . '.', 'outcomes' => []];
         }
         $result = ['status' => 'pending', 'shopify_status' => $operation['status'],
             'object_count' => (int) $operation['objectCount'], 'outcomes' => []];
@@ -54,7 +70,9 @@ final class VariantResolver
             if ($result['object_count'] !== 0) {
                 throw new RuntimeException('Shopify completó la búsqueda sin devolver el JSONL.');
             }
-            file_put_contents($resultPath, '');
+            if (file_put_contents($resultPath, '') === false) {
+                throw new RuntimeException('No se pudo guardar el resultado vacío de Shopify.');
+            }
         } else {
             $this->shopify->download($operation['url'], $resultPath);
         }
@@ -75,6 +93,9 @@ final class VariantResolver
                 continue;
             }
             $variant = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
+            if (!is_array($variant) || !array_key_exists('sku', $variant) || empty($variant['id'])) {
+                throw new RuntimeException('Shopify devolvió una fila de variantes incompleta.');
+            }
             $examined++;
             if ($onProgress !== null && $examined % 1000 === 0) {
                 $onProgress($examined);

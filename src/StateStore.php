@@ -170,10 +170,48 @@ final class StateStore
     {
         foreach ($this->pdo->query("SELECT * FROM jobs WHERE status = 'running'") as $job) {
             $jobId = (int) $job['id'];
+            if ($job['action'] === 'sync'
+                && in_array($job['phase'], ['variants', 'variants_match', 'variants_retry', 'sync_ready'], true)
+                && !empty($job['operation_id']) && $this->articles($jobId) !== []) {
+                $summary = $job['summary'] ? json_decode($job['summary'], true, flags: JSON_THROW_ON_ERROR) : [];
+                $this->setProgress($jobId, 'waiting_shopify', $job['phase'], $job['operation_id'], (int) $job['object_count'], (int) $job['expected_count'], $summary);
+                continue;
+            }
             $this->addError($jobId, null, null, 'worker_interrupted', 'El trabajador anterior se detuvo antes de terminar esta acción.');
             $summary = $job['summary'] ? json_decode($job['summary'], true, flags: JSON_THROW_ON_ERROR) : [];
             $summary['error_count'] = $this->errorCount($jobId);
             $this->finish($jobId, 'failed', (int) $job['article_count'], (int) $job['tariff_count'], $summary);
+        }
+    }
+
+    // Publish mappings, incidents and the continuation checkpoint together.
+    // A killed worker leaves either the original lookup or the complete result.
+    public function completeVariantLookup(int $jobId, string $operationId, array $result, array $summary): array
+    {
+        $this->pdo->beginTransaction();
+        try {
+            if ($result['status'] === 'failed') {
+                $this->addError($jobId, null, null, 'variant_lookup_failed', $result['error']);
+                $summary['lookup']['inconclusive'] = count($this->unmappedArticles($jobId));
+            } else {
+                foreach ($result['outcomes'] as $article => $outcome) {
+                    $summary['lookup'][$outcome['status']]++;
+                    if ($outcome['status'] === 'unique') {
+                        $this->saveVariant((string) $article, $outcome['variant_id']);
+                    } else {
+                        $this->addError($jobId, null, (string) $article, $outcome['status'] === 'missing' ? 'missing_sku' : 'ambiguous_sku', $outcome['status'] === 'missing' ? 'No hay una variante Shopify con ese SKU.' : 'Varias variantes Shopify tienen ese SKU.');
+                    }
+                }
+            }
+            $summary['lookup_status'] = $result['status'] === 'failed' ? 'terminal_failure' : 'completed';
+            unset($summary['lookup_retry_error']);
+            $summary['phase_label'] = 'Preparando la comparación de precios';
+            $this->setProgress($jobId, 'waiting_shopify', 'sync_ready', $operationId, 0, 0, $summary);
+            $this->pdo->commit();
+            return $summary;
+        } catch (Throwable $error) {
+            $this->pdo->rollBack();
+            throw $error;
         }
     }
 

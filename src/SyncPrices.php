@@ -56,6 +56,7 @@ final class SyncPrices
             } catch (Throwable $error) {
                 $this->store->addError($jobId, null, null, 'variant_lookup_failed', $error->getMessage());
                 $summary['lookup']['inconclusive'] = count($articles);
+                $summary['lookup_status'] = 'terminal_failure';
             }
         }
         $this->sendPrices($jobId, $summary);
@@ -63,33 +64,41 @@ final class SyncPrices
 
     public function poll(array $job): void
     {
-        if ($job['phase'] !== 'variants') {
+        // Ignore stale callers after the same operation has already advanced.
+        $current = $this->store->jobStatus((int) $job['id']);
+        if ($current === null || !in_array($current['status'], ['running', 'waiting_shopify'], true)) {
+            return;
+        }
+        $job = $current;
+        if (!in_array($job['phase'], ['variants', 'variants_match', 'variants_retry', 'sync_ready'], true)) {
             throw new RuntimeException('Fase de sincronización desconocida.');
         }
         $jobId = (int) $job['id'];
         $summary = is_array($job['summary']) ? $job['summary'] : json_decode($job['summary'], true, flags: JSON_THROW_ON_ERROR);
+        if ($job['phase'] === 'sync_ready') {
+            $this->sendPrices($jobId, $summary);
+            return;
+        }
         $articles = $this->store->unmappedArticles($jobId);
+        $summary['phase_label'] = 'Relacionando referencias por SKU';
+        $this->store->setProgress($jobId, 'running', 'variants_match', $job['operation_id'], 0, count($articles), $summary);
         $result = (new VariantResolver($this->shopify))->poll((string) $job['operation_id'], $this->config->storagePath . '/sync-' . $jobId . '-variants.jsonl', $articles);
+        if ($result['status'] === 'temporary_failure') {
+            $summary['lookup_status'] = 'temporary_failure';
+            $summary['lookup_retry_error'] = $result['error'];
+            $summary['phase_label'] = 'Reintentando la búsqueda de variantes';
+            $this->store->setProgress($jobId, 'waiting_shopify', 'variants_retry', $job['operation_id'], (int) $job['object_count'], count($articles), $summary);
+            return;
+        }
+        unset($summary['lookup_retry_error']);
+        $summary['lookup_status'] = $result['status'];
         $summary['shopify_status'] = $result['shopify_status'];
         if ($result['status'] === 'pending') {
+            $summary['phase_label'] = 'Buscando variantes para referencias sin asociación';
             $this->store->setProgress($jobId, 'waiting_shopify', 'variants', $job['operation_id'], $result['object_count'], count($articles), $summary);
             return;
         }
-        if ($result['status'] === 'failed') {
-            $this->store->addError($jobId, null, null, 'variant_lookup_failed', $result['error']);
-            $summary['lookup']['inconclusive'] = count($articles);
-        } else {
-            $summary['phase_label'] = 'Relacionando referencias por SKU';
-            $this->store->setProgress($jobId, 'running', 'variants_match', $job['operation_id'], 0, count($articles), $summary);
-            foreach ($result['outcomes'] as $article => $outcome) {
-                $summary['lookup'][$outcome['status']]++;
-                if ($outcome['status'] === 'unique') {
-                    $this->store->saveVariant((string) $article, $outcome['variant_id']);
-                } else {
-                    $this->store->addError($jobId, null, (string) $article, $outcome['status'] === 'missing' ? 'missing_sku' : 'ambiguous_sku', $outcome['status'] === 'missing' ? 'No hay una variante Shopify con ese SKU.' : 'Varias variantes Shopify tienen ese SKU.');
-                }
-            }
-        }
+        $summary = $this->store->completeVariantLookup($jobId, (string) $job['operation_id'], $result, $summary);
         $this->sendPrices($jobId, $summary);
     }
 

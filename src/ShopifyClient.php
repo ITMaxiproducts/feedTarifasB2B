@@ -2,6 +2,14 @@
 
 declare(strict_types=1);
 
+final class ShopifyRequestException extends RuntimeException
+{
+    public function __construct(string $message, public readonly bool $transient)
+    {
+        parent::__construct($message);
+    }
+}
+
 class ShopifyClient
 {
     private string $endpoint;
@@ -48,7 +56,7 @@ class ShopifyClient
                 $retryable = $retryTransient && array_intersect($codes, ['THROTTLED', 'INTERNAL_SERVER_ERROR', 'SERVICE_UNAVAILABLE']) !== [];
                 if (!$retryable) {
                     if (isset($result['errors']) || !isset($result['data'])) {
-                        throw new RuntimeException('Shopify GraphQL: ' . json_encode($result['errors'] ?? $result, JSON_UNESCAPED_UNICODE));
+                        throw new ShopifyRequestException('Shopify GraphQL: ' . json_encode($result['errors'] ?? $result, JSON_UNESCAPED_UNICODE), array_intersect($codes, ['THROTTLED', 'INTERNAL_SERVER_ERROR', 'SERVICE_UNAVAILABLE']) !== []);
                     }
                     return $result['data'];
                 }
@@ -57,9 +65,9 @@ class ShopifyClient
             }
             if (!$retryable || $attempt === $maxAttempts - 1) {
                 if ($response === false || $status < 200 || $status >= 300) {
-                    throw new RuntimeException('Shopify GraphQL HTTP ' . $status . ($error !== '' ? ': ' . $error : '.'));
+                    throw new ShopifyRequestException('Shopify GraphQL HTTP ' . $status . ($error !== '' ? ': ' . $error : '.'), $response === false || $status === 429 || $status >= 500);
                 }
-                throw new RuntimeException('Shopify GraphQL temporalmente no disponible tras ' . $maxAttempts . ' intento(s).');
+                throw new ShopifyRequestException('Shopify GraphQL temporalmente no disponible tras ' . $maxAttempts . ' intento(s).', true);
             }
             $delay = is_numeric($retryAfter) ? min(30, max(1, (int) $retryAfter)) : min(8, 1 << $attempt);
             sleep($delay);
