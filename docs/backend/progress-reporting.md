@@ -18,6 +18,8 @@ El panel separa los precios **sin cambios**, **a actualizar**, **enviados**, **c
 
 Para operaciones existentes, `StateStore::hydrateJob()` adapta los contadores al leer el estado usando `job_prices` y las incidencias `variant_unmapped` del mismo job. No modifica el resumen ni los registros originales en SQLite. Tanto la página como `/status` usan esa presentación. Los precios sin cambios se calculan a partir de los preparados menos los candidatos originales; no incluyen referencias descartadas por validación SQL.
 
+El botón **Descargar incidencias en Excel** de cada acción usa `GET /incidents.xlsx?id=<acción>`. Exporta todas las incidencias guardadas de esa acción, sin el límite de 50 de la vista, agrupadas por fila, referencia, código y mensaje. Incluye repeticiones e incidencias generales sin referencia; la fila SQL queda vacía cuando no existe. Los SKU y mensajes se guardan como texto explícito para conservar ceros iniciales y evitar fórmulas. La descarga no relee SQL Server, no consulta Shopify ni modifica jobs, precios o incidencias. El XLSX se prepara en almacenamiento privado y se elimina tras servirlo.
+
 ## 🏆 Benefits
 
 - El usuario ve actividad real sin interpretar `0 / 160` como una carga bloqueada.

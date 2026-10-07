@@ -6,9 +6,6 @@ final class IncidentExport
 {
     public static function write(string $path, array $job, iterable $incidents): void
     {
-        if (!class_exists(PharData::class)) {
-            throw new RuntimeException('La extensión PHP Phar es necesaria para exportar a Excel.');
-        }
         $sheetPath = $path . '.xml';
         $sheet = fopen($sheetPath, 'xb');
         if ($sheet === false) {
@@ -33,16 +30,20 @@ final class IncidentExport
             fclose($sheet);
             $sheet = null;
 
-            // PharData creates a standard ZIP without requiring ZipArchive or
-            // enabling executable Phar archives (phar.readonly stays enabled).
-            $zip = new PharData($path, 0, null, Phar::ZIP);
+            // Build an ordinary ZIP package. PharData writes version 0 headers,
+            // which permissive readers accept but Excel can reject.
+            $zip = [];
             $zip['[Content_Types].xml'] = '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>';
             $zip['_rels/.rels'] = '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
             $zip['xl/workbook.xml'] = '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Incidencias" sheetId="1" r:id="rId1"/></sheets></workbook>';
             $zip['xl/_rels/workbook.xml.rels'] = '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
             $zip['xl/styles.xml'] = '<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF24476B"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
-            $zip->addFile($sheetPath, 'xl/worksheets/sheet1.xml');
-            unset($zip);
+            $contents = file_get_contents($sheetPath);
+            if ($contents === false) {
+                throw new RuntimeException('No se pudo leer la hoja de incidencias.');
+            }
+            $zip['xl/worksheets/sheet1.xml'] = $contents;
+            self::archive($path, $zip);
         } catch (Throwable $error) {
             if (is_file($path)) {
                 unlink($path);
@@ -53,6 +54,36 @@ final class IncidentExport
                 fclose($sheet);
             }
             unlink($sheetPath);
+        }
+    }
+
+    private static function archive(string $path, array $parts): void
+    {
+        $file = fopen($path, 'xb');
+        if ($file === false) {
+            throw new RuntimeException('No se pudo crear el archivo Excel.');
+        }
+        try {
+            $directory = '';
+            foreach ($parts as $name => $contents) {
+                $offset = ftell($file);
+                $size = strlen($contents);
+                $crc = crc32($contents);
+                $compressed = function_exists('gzdeflate') ? gzdeflate($contents) : false;
+                $method = $compressed === false ? 0 : 8;
+                $body = $compressed === false ? $contents : $compressed;
+                $length = strlen($body);
+                // All package filenames are ASCII. ZIP 2.0, no extra fields,
+                // no data descriptors; CRC and sizes are known in advance.
+                $header = pack('VvvvvvVVVvv', 0x04034b50, 20, 0, $method, 0, 33, $crc, $length, $size, strlen($name), 0);
+                self::put($file, $header . $name . $body);
+                $directory .= pack('VvvvvvvVVVvvvvvVV', 0x02014b50, 20, 20, 0, $method, 0, 33, $crc, $length, $size, strlen($name), 0, 0, 0, 0, 0, $offset) . $name;
+            }
+            $offset = ftell($file);
+            self::put($file, $directory);
+            self::put($file, pack('VvvvvVVv', 0x06054b50, 0, 0, count($parts), count($parts), strlen($directory), $offset, 0));
+        } finally {
+            fclose($file);
         }
     }
 

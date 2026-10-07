@@ -293,6 +293,15 @@ try {
     $failures++;
 }
 
+require_once __DIR__ . '/verify-incident-export.php';
+try {
+    verifyIncidentExport();
+    echo "Verificación offline correcta: Excel de incidencias completo, agrupado y sin modificar SQLite.\n";
+} catch (Throwable $error) {
+    fwrite(STDERR, "Falló la verificación de Excel: {$error->getMessage()}\n");
+    $failures++;
+}
+
 if ($failures > 0) {
     fwrite(STDERR, "Verificación fallida: {$failures} problema(s).\n");
     exit(1);

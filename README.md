@@ -26,6 +26,14 @@ Panel pequeño en PHP para validar las diez tarifas de SQL Server, iniciar una c
 
    Usa el binario PHP CLI habilitado por el hosting. Habilita `PDO_SQLSRV`, `PDO_SQLITE` y `cURL`. El bloqueo evita que dos procesos trabajen al mismo tiempo. Cada sincronización compara los diez importes actuales con los últimos confirmados, agrupa cambios por tarifa y envía como máximo 250 precios por petición. El panel permite encolar la misma tarea con **Sincronizar ahora**. Los errores y precios sin confirmar quedan elegibles para el siguiente intento. El panel muestra la próxima hora nocturna; durante las operaciones de Shopify, la frecuencia real de actualización depende de este cron.
 
+## Exportar incidencias a Excel
+
+En la sección **Incidencias por referencia y motivo** de cada acción, pulsa **Descargar incidencias en Excel**. El `.xlsx` incluye todas las incidencias de esa acción (también las que no caben entre las 50 recientes del panel), con referencia, fila SQL, código, mensaje y repeticiones. Tiene filtros y cabecera fija. Las incidencias generales también se incluyen; el archivo identifica la acción, su estado y fecha de creación. Si la acción sigue activa, la descarga refleja las incidencias guardadas al consultar los datos.
+
+La descarga utiliza la base SQLite indicada por `SQLITE_PATH` (por defecto `var/jobs.sqlite`). Para revisar una copia de producción, configura una instalación local separada con `SQLITE_PATH=var/copia-produccion.sqlite` y deja su worker detenido. Obtén una copia consistente mediante el backup de SQLite; no copies solo el `.sqlite` de una base activa en modo WAL, porque puede haber datos pendientes en `-wal`. Abre el panel local y descarga las incidencias de la carga inicial o la última acción visible. No hace falta conexión a SQL Server ni Shopify para exportar. No reemplaces la base de producción con esa copia.
+
+La generación empaqueta el XLSX como ZIP estándar y comprime su contenido si PHP tiene zlib; no requiere `Phar` ni `ZipArchive`. Mantén la misma protección de acceso del panel: la descarga contiene referencias y mensajes de las incidencias.
+
 ## Verificación local
 
 Con PHP CLI disponible, ejecuta:
